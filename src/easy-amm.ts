@@ -37,9 +37,10 @@ class EasyERC20 implements IEasyERC20 {
     public address: string,
     public decimals: number,
     public balance: number,
-    private _token: Contract
+    private _token: Contract,
+    private _wallet: Wallet
   ) {
-    _token.provider.on("block", this.updateBalances.bind(this));
+    _token.provider.on("block", this.updateBalance.bind(this));
   }
 
   public async allowance(owner: string, spender: string) {
@@ -47,13 +48,15 @@ class EasyERC20 implements IEasyERC20 {
     return Utils.fromBigNumber(allowance, this.decimals);
   }
 
-  public approve(spender: string, amount = 0) {
-    return this._token.approve(
+  public async approve(spender: string, amount = 0) {
+    const tx = await this._token.populateTransaction.approve(
       spender,
       !amount
         ? "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
         : Utils.toBigNumber(amount, this.decimals)
     );
+
+    return this._wallet.sendTransaction(tx);
   }
 
   public async balanceOf(address: string) {
@@ -61,13 +64,17 @@ class EasyERC20 implements IEasyERC20 {
     return Utils.fromBigNumber(balance, this.decimals);
   }
 
-  public transfer(to: string, amount: number) {
-    return this._token.transfer(to, Utils.toBigNumber(amount, this.decimals));
+  public async transfer(to: string, amount: number) {
+    const tx = await this._token.populateTransaction.transfer(
+      to,
+      Utils.toBigNumber(amount, this.decimals)
+    );
+    return this._wallet.sendTransaction(tx);
   }
 
-  private async updateBalances() {
+  private async updateBalance() {
     try {
-      this.balance = await this.balanceOf(this._token._wallet.address);
+      this.balance = await this.balanceOf(this._wallet.address);
     } catch (err) {
       console.log("error updating price", err);
     }
@@ -87,7 +94,8 @@ export const createEasyERC20 = async (address: string, wallet: Wallet) => {
     address,
     decimals,
     Utils.fromBigNumber(balance, decimals),
-    token
+    token,
+    wallet
   );
 };
 
