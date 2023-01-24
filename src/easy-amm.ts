@@ -1,44 +1,107 @@
+import { BigNumber } from "@ethersproject/bignumber";
 import { Contract } from "@ethersproject/contracts";
 import { TransactionResponse } from "@ethersproject/providers";
 import { Wallet } from "@ethersproject/wallet";
-import { formatUnits, parseUnits } from "@ethersproject/units";
 import dayjs from "dayjs";
 
 import * as Utils from "./utils";
-import { BigNumber } from "@ethersproject/bignumber";
 
 export type OrderSide = "buy" | "sell";
 
 export interface IEasyAMMPair {
   NewPrice: Utils.Evt<number>;
 
-  base: string;
-  quote: string;
-  baseBal: number;
-  quoteBal: number;
+  base: IEasyERC20;
+  quote: IEasyERC20;
   price: number;
 
   placeOrder(amount: number, side: OrderSide): Promise<TransactionResponse>;
   quotePriceForAmount(amount: number, side: OrderSide): number;
 }
 
+export interface IEasyERC20 {
+  symbol: string;
+  address: string;
+  decimals: number;
+  balance: number;
+
+  allowance(owner: string, spender: string): Promise<number>;
+  approve(spender: string, amount?: number): Promise<TransactionResponse>;
+  balanceOf(address: string): Promise<number>;
+  transfer(to: string, amount: number): Promise<TransactionResponse>;
+}
+
+class EasyERC20 implements IEasyERC20 {
+  constructor(
+    public symbol: string,
+    public address: string,
+    public decimals: number,
+    public balance: number,
+    private _token: Contract
+  ) {
+    _token.provider.on("block", this.updateBalances.bind(this));
+  }
+
+  public async allowance(owner: string, spender: string) {
+    const allowance = await this._token.allowance(owner, spender);
+    return Utils.fromBigNumber(allowance, this.decimals);
+  }
+
+  public approve(spender: string, amount = 0) {
+    return this._token.approve(
+      spender,
+      !amount
+        ? "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        : Utils.toBigNumber(amount, this.decimals)
+    );
+  }
+
+  public async balanceOf(address: string) {
+    const balance = await this._token.balanceOf(address);
+    return Utils.fromBigNumber(balance, this.decimals);
+  }
+
+  public transfer(to: string, amount: number) {
+    return this._token.transfer(to, Utils.toBigNumber(amount, this.decimals));
+  }
+
+  private async updateBalances() {
+    try {
+      this.balance = await this.balanceOf(this._token._wallet.address);
+    } catch (err) {
+      console.log("error updating price", err);
+    }
+  }
+}
+
+export const createEasyERC20 = async (address: string, wallet: Wallet) => {
+  const token = Utils.getERC20(address, wallet.provider);
+  const [symbol, decimals, balance] = await Promise.all([
+    token.symbol(),
+    token.decimals(),
+    token.balanceOf(wallet.address),
+  ]);
+
+  return new EasyERC20(
+    symbol,
+    address,
+    decimals,
+    Utils.fromBigNumber(balance, decimals),
+    token
+  );
+};
+
 class EasyAMMPair implements IEasyAMMPair {
   public NewPrice = new Utils.Evt<number>();
 
   constructor(
-    public base: string,
-    public quote: string,
-    public baseBal: number,
-    public quoteBal: number,
+    public base: IEasyERC20,
+    public quote: IEasyERC20,
     public price: number,
     private _wallet: Wallet,
     private _router: Contract,
     private _pair: Contract,
     private _reserves: Utils.IReserves,
-    private _baseAddress: string,
-    private _quoteAddress: string,
-    private _baseDecimals: number,
-    private _quoteDecimals: number,
     private _baseIsFirstToken: boolean,
     private _slippageTolerance: number
   ) {
@@ -46,33 +109,33 @@ class EasyAMMPair implements IEasyAMMPair {
   }
 
   public async placeOrder(amount: number, side: OrderSide) {
-    const baseAmount = parseUnits(amount.toString(), this._baseDecimals);
-    const quoteAmount = parseUnits(
-      (this.quotePriceForAmount(amount, side) * amount).toString(),
-      this._quoteDecimals
+    const baseAmount = Utils.toBigNumber(amount, this.base.decimals);
+    const quoteAmount = Utils.toBigNumber(
+      this.quotePriceForAmount(amount, side) * amount,
+      this.quote.decimals
     );
     const deadline = dayjs().add(1, "minute").unix();
 
     let tx;
 
     if (side === "buy") {
-      await this.approve(quoteAmount, this._quoteAddress, this._router.address);
+      await this.approve(quoteAmount, this.quote, this._router.address); // TODO: remove this check if already approved
 
       // amuont out first
       tx = await this._router.populateTransaction.swapTokensForExactTokens(
         baseAmount,
         quoteAmount,
-        [this._quoteAddress, this._baseAddress],
+        [this.quote.address, this.base.address],
         this._wallet.address,
         deadline
       );
     } else {
-      await this.approve(baseAmount, this._baseAddress, this._router.address);
+      await this.approve(baseAmount, this.base, this._router.address); // TODO: remove this check if already approved
       // amount in firsy
       tx = await this._router.populateTransaction.swapExactTokensForTokens(
         baseAmount,
         quoteAmount,
-        [this._baseAddress, this._quoteAddress],
+        [this.base.address, this.quote.address],
         this._wallet.address,
         deadline
       );
@@ -82,7 +145,7 @@ class EasyAMMPair implements IEasyAMMPair {
   }
 
   public quotePriceForAmount(baseAmount: number, side: OrderSide) {
-    const amountWei = parseUnits(baseAmount.toString(), this._baseDecimals);
+    const amountWei = Utils.toBigNumber(baseAmount, this.base.decimals);
     if (side === "buy") {
       const amountInWei = Utils.getAmountIn(
         amountWei,
@@ -95,7 +158,7 @@ class EasyAMMPair implements IEasyAMMPair {
       );
 
       const amountIn = this.applySlippage(
-        parseFloat(formatUnits(amountInWei, this._quoteDecimals))
+        Utils.fromBigNumber(amountInWei, this.quote.decimals)
       );
 
       return amountIn / baseAmount;
@@ -111,7 +174,7 @@ class EasyAMMPair implements IEasyAMMPair {
       );
 
       const amountOut = this.applySlippage(
-        parseFloat(formatUnits(amountOutWei, this._quoteDecimals)),
+        Utils.fromBigNumber(amountOutWei, this.quote.decimals),
         -1
       );
 
@@ -119,16 +182,11 @@ class EasyAMMPair implements IEasyAMMPair {
     }
   }
 
-  private async approve(amount: BigNumber, token_addr: string, router: string) {
-    const token = Utils.getERC20(token_addr, this._wallet.provider);
+  private async approve(amount: BigNumber, token: IEasyERC20, router: string) {
     const allowance = await token.allowance(this._wallet.address, router);
-    if (allowance.lt(amount)) {
-      const tx = await token.populateTransaction.approve(
-        router,
-        "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-      );
-      const res = await this._wallet.sendTransaction(tx);
-      await res.wait();
+    if (Utils.toBigNumber(allowance, token.decimals).lt(amount)) {
+      const tx = await token.approve(router);
+      await tx.wait();
     }
   }
 
@@ -137,36 +195,18 @@ class EasyAMMPair implements IEasyAMMPair {
   }
 
   private async updateData() {
-    await Promise.all([this.updatePrice(), this.updateBalances()]);
+    await Promise.all([this.updatePrice()]);
   }
 
-  private async updateBalances() {
+  private async updatePrice() {
     try {
       this._reserves = await this._pair.getReserves();
       this.price = Utils.calcPriceFromReserves(
         this._reserves,
         this._baseIsFirstToken,
-        this._baseDecimals
+        this.base.decimals
       );
       this.NewPrice.trigger(this.price);
-    } catch (err) {
-      console.log("error updating price", err);
-    }
-  }
-
-  private async updatePrice() {
-    try {
-      const [base, quote] = await Promise.all([
-        Utils.getERC20(this._baseAddress, this._wallet.provider).balanceOf(
-          this._wallet.address
-        ),
-        Utils.getERC20(this._quoteAddress, this._wallet.provider).balanceOf(
-          this._wallet.address
-        ),
-      ]);
-
-      this.baseBal = parseFloat(formatUnits(base, this._baseDecimals));
-      this.quoteBal = parseFloat(formatUnits(quote, this._quoteDecimals));
     } catch (err) {
       console.log("error updating price", err);
     }
@@ -189,51 +229,28 @@ export const createEasyAMMPair = async (
     pair.getReserves(),
   ]);
 
-  const _token0 = Utils.getERC20(token0, wallet.provider);
-  const _token1 = Utils.getERC20(token1, wallet.provider);
+  const _token0 = await createEasyERC20(token0, wallet);
+  const _token1 = await createEasyERC20(token1, wallet);
 
-  const [symbol0, symbol1, decimals0, decimals1, bal0, bal1] =
-    await Promise.all([
-      _token0.symbol(),
-      _token1.symbol(),
-      _token0.decimals(),
-      _token1.decimals(),
-      _token0.balanceOf(wallet.address),
-      _token1.balanceOf(wallet.address),
-    ]);
-
-  const baseIsFirstToken = base === symbol0;
+  const baseIsFirstToken = base === _token0.symbol;
+  const [_base, _quote] = baseIsFirstToken
+    ? [_token0, _token1]
+    : [_token1, _token0];
 
   const price = Utils.calcPriceFromReserves(
     reserves,
     baseIsFirstToken,
-    baseIsFirstToken ? decimals0 : decimals1
+    _base.decimals
   );
 
   return new EasyAMMPair(
-    baseIsFirstToken ? symbol0 : symbol1,
-    baseIsFirstToken ? symbol1 : symbol0,
-    parseFloat(
-      formatUnits(
-        baseIsFirstToken ? bal0 : bal1,
-        baseIsFirstToken ? decimals0 : decimals1
-      )
-    ),
-    parseFloat(
-      formatUnits(
-        baseIsFirstToken ? bal1 : bal0,
-        baseIsFirstToken ? decimals1 : decimals0
-      )
-    ),
+    _base,
+    _quote,
     price,
     wallet,
     router,
     pair,
     reserves,
-    baseIsFirstToken ? token0 : token1,
-    baseIsFirstToken ? token1 : token0,
-    baseIsFirstToken ? decimals0 : decimals1,
-    baseIsFirstToken ? decimals1 : decimals0,
     baseIsFirstToken,
     slippageTolerancePercent / 100
   );

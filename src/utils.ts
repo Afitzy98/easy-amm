@@ -1,11 +1,11 @@
-import { BigNumber } from "@ethersproject/bignumber";
+import { BigNumber, BigNumberish } from "@ethersproject/bignumber";
 import { Contract } from "@ethersproject/contracts";
 import {
   Provider,
   TransactionRequest,
   TransactionResponse,
 } from "@ethersproject/providers";
-import { formatUnits } from "@ethersproject/units";
+import { formatUnits, parseUnits } from "@ethersproject/units";
 import { Wallet } from "@ethersproject/wallet";
 import _ from "lodash";
 
@@ -118,3 +118,8 @@ export class AutoNonceWallet extends Wallet {
     return super.sendTransaction(transaction);
   }
 }
+
+export const fromBigNumber = (val: BigNumberish, decimals = 18) =>
+  parseFloat(formatUnits(BigNumber.from(val), decimals));
+export const toBigNumber = (val: number, decimals = 18) =>
+  parseUnits(val.toString(), decimals);
