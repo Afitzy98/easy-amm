@@ -7,7 +7,6 @@ import * as Utils from "./utils";
 config();
 
 // TODO: handle when want to trade with wrapped native token - EasyAMMWrappedPair maybe?
-// TODO: handle fees from different dexs
 // TODO: handle multi pair swap i.e path.length > 2
 
 const PROVIDER_URL = process.env.PROVIDER_URL;
@@ -34,7 +33,7 @@ async function main() {
   console.log(pair.quotePriceForAmount(100000, "sell"));
   console.log(pair.quotePriceForAmount(10000000, "sell"));
 
-  pair.placeOrder(1000, "buy").then((tx) => console.log("TX HASH:", tx.hash));
+  // pair.placeOrder(1000, "buy").then((tx) => console.log("TX HASH:", tx.hash));
 }
 
 main();

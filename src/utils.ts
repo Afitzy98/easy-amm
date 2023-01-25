@@ -73,10 +73,12 @@ export function getAmountIn(
   amount_out: BigNumber,
   reserve_in: BigNumber,
   reserve_out: BigNumber,
-  fee = 9975
+  fee = 25
 ) {
+  const multi = 10000 - fee;
+
   const numerator = reserve_in.mul(amount_out).mul(10000);
-  const denominator = reserve_out.sub(amount_out).mul(fee);
+  const denominator = reserve_out.sub(amount_out).mul(multi);
   return numerator.div(denominator).add(1);
 }
 
@@ -84,9 +86,11 @@ export function getAmountOut(
   amount_in: BigNumber,
   reserve_in: BigNumber,
   reserve_out: BigNumber,
-  fee = 9975
+  fee = 25
 ) {
-  const amount_in_with_fee = amount_in.mul(fee);
+  const multi = 10000 - fee;
+
+  const amount_in_with_fee = amount_in.mul(multi);
   const numerator = amount_in_with_fee.mul(reserve_out);
   const denominator = reserve_in.mul(10000).add(amount_in_with_fee);
   return numerator.div(denominator);
